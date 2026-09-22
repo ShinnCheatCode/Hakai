@@ -44,6 +44,7 @@ struct FolderPatchSelectionView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(language.text("common.cancel")) { dismiss() }
                 }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button(language.text("patch.add_selected")) {
                         let selection = selectedCandidates
@@ -52,11 +53,14 @@ struct FolderPatchSelectionView: View {
                     }
                     .disabled(selectedIDs.isEmpty)
                 }
+
                 ToolbarItemGroup(placement: .bottomBar) {
                     Button(selectionActionTitle, action: toggleAll)
                 }
             }
-            .task { loadCandidates() }
+            .task {
+                loadCandidates()
+            }
         }
     }
 
@@ -82,19 +86,118 @@ struct FolderPatchSelectionView: View {
                             Image(systemName: "doc.fill")
                                 .foregroundStyle(AppTheme.accent)
                                 .frame(width: 24)
+
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(candidate.url.lastPathComponent)
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
+
                                 Text(candidate.relativePath)
                                     .font(.caption2.monospaced())
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)
                             }
+
                             Spacer(minLength: 8)
+
                             VStack(alignment: .trailing, spacing: 5) {
-                                Image(systemName: selectedIDs.contains(candidate.id)
-                                      ? "checkmark.circle.fill"
-                                      : "circle")
-                                    .foregroundStyle(selected
+                                Image(
+                                    systemName: selectedIDs.contains(candidate.id)
+                                        ? "checkmark.circle.fill"
+                                        : "circle"
+                                )
+                                .foregroundStyle(
+                                    selectedIDs.contains(candidate.id)
+                                        ? AppTheme.accent
+                                        : Color.secondary
+                                )
+
+                                Text(
+                                    ByteCountFormatter.string(
+                                        fromByteCount: candidate.byteCount,
+                                        countStyle: .file
+                                    )
+                                )
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } header: {
+                Text(
+                    language.text(
+                        "patch.selected_count",
+                        Int64(selectedIDs.count)
+                    )
+                )
+                .textCase(nil)
+            } footer: {
+                Text(language.text("patch.folder_selection_footer"))
+            }
+        }
+        .listStyle(.plain)
+    }
+
+    private var selectionActionTitle: String {
+        selectedIDs.count == candidates.count
+            ? language.text("patch.deselect_all")
+            : language.text("patch.select_all")
+    }
+
+    private func loadCandidates() {
+        guard isLoading else { return }
+
+        let root = containerRoot
+        let selectedFolder = folder
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result {
+                try PatchDraftService.candidates(
+                    in: selectedFolder,
+                    containerRoot: root
+                )
+            }
+
+            DispatchQueue.main.async {
+                isLoading = false
+
+                switch result {
+                case .success(let loaded):
+                    candidates = loaded
+                    selectedIDs = Set(loaded.map(\.id))
+
+                case .failure(let error as PatchPackageError):
+                    validationMessageKey = error.localizationKey
+
+                case .failure:
+                    validationMessageKey = "patch.error.invalid_project"
+                }
+            }
+        }
+    }
+
+    private func toggle(_ candidate: PatchDraftCandidate) {
+        validationMessageKey = nil
+
+        if selectedIDs.remove(candidate.id) != nil {
+            return
+        }
+
+        selectedIDs.insert(candidate.id)
+    }
+
+    private func toggleAll() {
+        validationMessageKey = nil
+
+        if selectedIDs.count == candidates.count {
+            selectedIDs.removeAll()
+            return
+        }
+
+        selectedIDs = Set(candidates.map(\.id))
+    }
+}
