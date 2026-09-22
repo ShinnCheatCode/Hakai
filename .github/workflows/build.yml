@@ -5,43 +5,93 @@ on:
     branches:
       - main
       - master
+  pull_request:
+    branches:
+      - main
+      - master
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    name: Build iOS
+    name: Build iOS app (unsigned)
     runs-on: macos-14
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Select Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.3.app
+          sudo xcode-select -s /Applications/Xcode_15.4.app
           xcodebuild -version
 
-      - name: Install XcodeGen
+      - name: Verify project files
+        shell: bash
         run: |
-          brew install xcodegen
+          set -euo pipefail
 
-      - name: Generate Xcode project
+          test -f "ThreeOneOSFive.xcodeproj/project.pbxproj"
+          test -f "ThreeOneOSFive/Info.plist"
+          test -f "ThreeOneOSFive/App.swift"
+          test -d "ThreeOneOSFive/Assets.xcassets"
+
+          echo "Project structure OK"
+
+      - name: Check Xcode project
+        shell: bash
         run: |
-          xcodegen generate
+          set -euo pipefail
+          xcodebuild -list \
+            -project "ThreeOneOSFive.xcodeproj"
 
       - name: Build
+        shell: bash
         run: |
+          set -euo pipefail
+
           xcodebuild \
-            -project ThreeOneOSFive.xcodeproj \
-            -scheme ThreeOneOSFive \
-            -sdk iphoneos \
+            -project "ThreeOneOSFive.xcodeproj" \
+            -scheme "ThreeOneOSFive" \
             -configuration Release \
+            -sdk iphoneos \
             -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build
+            CODE_SIGN_IDENTITY="" \
+            clean build
 
-      - name: Build result
-        if: success()
+      - name: Package unsigned app
+        shell: bash
         run: |
-          echo "Build succeeded."
+          set -euo pipefail
+
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/ThreeOneOSFive.app"
+
+          test -d "$APP_PATH"
+
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
+
+          cd "$RUNNER_TEMP"
+          /usr/bin/zip -qry \
+            "ThreeOneOSFive-unsigned.ipa" \
+            Payload
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThreeOneOSFive-unsigned
+          path: ${{ runner.temp }}/ThreeOneOSFive-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
