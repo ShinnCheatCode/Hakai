@@ -1,11 +1,10 @@
-name: Build ThreeOneOSFive
+name: Build 3105
 
 on:
   push:
     branches:
       - main
       - master
-
   workflow_dispatch:
 
 permissions:
@@ -17,68 +16,54 @@ concurrency:
 
 jobs:
   build:
-    name: Build ThreeOneOSFive
+    name: Build 3105
     runs-on: macos-14
     timeout-minutes: 45
 
     steps:
-
-      # =========================================
-      # 1. CHECKOUT
-      # =========================================
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # =========================================
-      # 2. XCODE
-      # =========================================
       - name: Check Xcode
         run: |
           set -euo pipefail
-
           xcodebuild -version
           xcode-select -p
 
-      # =========================================
-      # 3. CHECK PROJECT
-      # =========================================
-      - name: Check project
+      - name: Fix project file name
         shell: bash
         run: |
           set -euo pipefail
 
-          test -d "ThreeOneOSFive.xcodeproj"
+          mkdir -p "ThreeOneOSFive.xcodeproj"
+
+          # repo đang có file tên lệch " project.pbxproj"
+          if [ -f "ThreeOneOSFive.xcodeproj/ project.pbxproj" ] && [ ! -s "ThreeOneOSFive.xcodeproj/project.pbxproj" ]; then
+            mv "ThreeOneOSFive.xcodeproj/ project.pbxproj" "ThreeOneOSFive.xcodeproj/project.pbxproj"
+          fi
+
           test -f "ThreeOneOSFive.xcodeproj/project.pbxproj"
+          echo "project.pbxproj OK"
 
-          echo "Xcode project OK"
-
-      # =========================================
-      # 4. ORGANIZE SOURCE
-      # =========================================
       - name: Organize source
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p "ThreeOneOSFive"
 
-          # Root source files
           for file in \
             "App.swift" \
             "ContentView.swift" \
             "Info.plist" \
             "ThreeOneOSFive-Bridging-Header.h"
           do
-            if [ -f "$file" ]; then
-              if [ ! -f "ThreeOneOSFive/$file" ]; then
-                mv "$file" "ThreeOneOSFive/$file"
-              fi
+            if [ -f "$file" ] && [ ! -f "ThreeOneOSFive/$file" ]; then
+              mv "$file" "ThreeOneOSFive/$file"
             fi
           done
 
-          # Source directories
           for dir in \
             "helpers" \
             "views" \
@@ -86,7 +71,8 @@ jobs:
             "zh-Hans.lproj" \
             "en.lproj" \
             "exploit" \
-            "kexploit"
+            "kexploit" \
+            "Assets.xcassets"
           do
             if [ -d "$dir" ]; then
               mkdir -p "ThreeOneOSFive/$dir"
@@ -95,64 +81,139 @@ jobs:
             fi
           done
 
-          echo ""
-          echo "===== SOURCE TREE ====="
+          find "ThreeOneOSFive" -maxdepth 2 -print | sort
 
-          find "ThreeOneOSFive" \
-            -maxdepth 2 \
-            -print | sort
+      - name: Ensure minimal Assets.xcassets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSETS="ThreeOneOSFive/Assets.xcassets"
+          mkdir -p "$ASSETS/AppIcon.appiconset" "$ASSETS/Max.imageset" "$ASSETS/Normal.imageset"
 
-      # =========================================
-      # 5. VERIFY SOURCE
-      # =========================================
-      - name: Verify source
+          [ -f "$ASSETS/Contents.json" ] || cat > "$ASSETS/Contents.json" <<'EOF'
+          {
+            "info": { "author": "xcode", "version": 1 }
+          }
+          EOF
+
+          [ -f "$ASSETS/AppIcon.appiconset/Contents.json" ] || cat > "$ASSETS/AppIcon.appiconset/Contents.json" <<'EOF'
+          {
+            "images": [
+              {
+                "filename": "AppIcon-1024.png",
+                "idiom": "universal",
+                "platform": "ios",
+                "size": "1024x1024"
+              }
+            ],
+            "info": { "author": "xcode", "version": 1 }
+          }
+          EOF
+
+          if [ ! -f "$ASSETS/AppIcon.appiconset/AppIcon-1024.png" ]; then
+            python3 - <<'PY'
+          import struct, zlib, pathlib
+          path = pathlib.Path("ThreeOneOSFive/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png")
+          w = h = 1024
+          def chunk(tag, data):
+              return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+          raw = b"".join(b"\x00" + (b"\x00\x00\x00" * w) for _ in range(h))
+          png = b"\x89PNG\r\n\x1a\n"
+          png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+          png += chunk(b"IDAT", zlib.compress(raw, 9))
+          png += chunk(b"IEND", b"")
+          path.write_bytes(png)
+          PY
+          fi
+
+          for name in Max Normal; do
+            [ -f "$ASSETS/${name}.imageset/Contents.json" ] || cat > "$ASSETS/${name}.imageset/Contents.json" <<EOF
+          {
+            "images": [
+              { "filename": "icon.png", "idiom": "universal", "scale": "1x" }
+            ],
+            "info": { "author": "xcode", "version": 1 }
+          }
+          EOF
+            [ -f "$ASSETS/${name}.imageset/icon.png" ] || cp "$ASSETS/AppIcon.appiconset/AppIcon-1024.png" "$ASSETS/${name}.imageset/icon.png"
+          done
+
+      - name: Create shared scheme
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f "ThreeOneOSFive/App.swift"
-          test -f "ThreeOneOSFive/ContentView.swift"
-          test -f "ThreeOneOSFive/Info.plist"
+          mkdir -p "ThreeOneOSFive.xcodeproj/xcshareddata/xcschemes"
 
-          echo "App.swift OK"
-          echo "ContentView.swift OK"
-          echo "Info.plist OK"
+          cat > "ThreeOneOSFive.xcodeproj/xcshareddata/xcschemes/3105.xcscheme" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Scheme
+             LastUpgradeVersion = "1540"
+             version = "1.7">
+             <BuildAction
+                parallelizeBuildables = "YES"
+                buildImplicitDependencies = "YES">
+                <BuildActionEntries>
+                   <BuildActionEntry
+                      buildForTesting = "YES"
+                      buildForRunning = "YES"
+                      buildForProfiling = "YES"
+                      buildForArchiving = "YES"
+                      buildForAnalyzing = "YES">
+                      <BuildableReference
+                         BuildableIdentifier = "primary"
+                         BlueprintIdentifier = "3105A001"
+                         BuildableName = "3105.app"
+                         BlueprintName = "3105"
+                         ReferencedContainer = "container:ThreeOneOSFive.xcodeproj">
+                      </BuildableReference>
+                   </BuildActionEntry>
+                </BuildActionEntries>
+             </BuildAction>
+             <LaunchAction
+                buildConfiguration = "Release"
+                selectedDebuggerIdentifier = ""
+                selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.PosixSpawn"
+                launchStyle = "0"
+                useCustomWorkingDirectory = "NO"
+                ignoresPersistentStateOnLaunch = "NO"
+                debugDocumentVersioning = "YES"
+                debugServiceExtension = "internal"
+                allowLocationSimulation = "YES">
+                <BuildableProductRunnable
+                   runnableDebuggingMode = "0">
+                   <BuildableReference
+                      BuildableIdentifier = "primary"
+                      BlueprintIdentifier = "3105A001"
+                      BuildableName = "3105.app"
+                      BlueprintName = "3105"
+                      ReferencedContainer = "container:ThreeOneOSFive.xcodeproj">
+                   </BuildableReference>
+                </BuildableProductRunnable>
+             </LaunchAction>
+             <ProfileAction
+                buildConfiguration = "Release"
+                shouldUseLaunchSchemeArgsEnv = "YES"
+                savedToolIdentifier = ""
+                useCustomWorkingDirectory = "NO"
+                debugDocumentVersioning = "YES">
+             </ProfileAction>
+             <AnalyzeAction
+                buildConfiguration = "Release">
+             </AnalyzeAction>
+             <ArchiveAction
+                buildConfiguration = "Release"
+                revealArchiveInOrganizer = "YES">
+             </ArchiveAction>
+          </Scheme>
+          EOF
 
-      # =========================================
-      # 6. LIST PROJECT TARGETS
-      # =========================================
-      - name: Check Xcode targets
+      - name: List schemes
         shell: bash
         run: |
           set -euo pipefail
+          xcodebuild -list -project "ThreeOneOSFive.xcodeproj"
 
-          xcodebuild \
-            -list \
-            -project "ThreeOneOSFive.xcodeproj"
-
-      # =========================================
-      # 7. CLEAN
-      # =========================================
-      - name: Clean
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          xcodebuild \
-            -project "ThreeOneOSFive.xcodeproj" \
-            -target "3105" \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            clean
-
-      # =========================================
-      # 8. BUILD
-      # =========================================
       - name: Build unsigned
         shell: bash
         run: |
@@ -160,7 +221,7 @@ jobs:
 
           xcodebuild \
             -project "ThreeOneOSFive.xcodeproj" \
-            -target "3105" \
+            -scheme "3105" \
             -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
@@ -170,92 +231,52 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
-      # =========================================
-      # 9. FIND APP
-      # =========================================
-      - name: Find built app
+      - name: Find app
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "===== BUILD PRODUCTS ====="
-
-          find \
-            "$RUNNER_TEMP/DerivedData/Build/Products" \
-            -type d \
-            -name "*.app" \
-            -print
-
           APP_PATH=$(find \
             "$RUNNER_TEMP/DerivedData/Build/Products" \
-            -type d \
-            -name "*.app" \
+            -type d \( -name "3105.app" -o -name "ThreeOneOSFive.app" \) \
             -print -quit)
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: No .app was created."
+            echo "ERROR: app not found"
+            find "$RUNNER_TEMP/DerivedData/Build/Products" -maxdepth 4 -print || true
             exit 1
           fi
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "App found: $APP_PATH"
 
-          echo ""
-          echo "APP FOUND:"
-          echo "$APP_PATH"
-
-      # =========================================
-      # 10. CREATE IPA
-      # =========================================
       - name: Create unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
 
           rm -rf "$RUNNER_TEMP/Payload"
-
           mkdir -p "$RUNNER_TEMP/Payload"
-
-          cp -R \
-            "$APP_PATH" \
-            "$RUNNER_TEMP/Payload/"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/$(basename "$APP_PATH")"
 
           cd "$RUNNER_TEMP"
+          /usr/bin/zip -qry "3105-unsigned.ipa" Payload
+          test -f "3105-unsigned.ipa"
+          ls -lh "3105-unsigned.ipa"
 
-          rm -f "ThreeOneOSFive-unsigned.ipa"
-
-          /usr/bin/zip \
-            -qry \
-            "ThreeOneOSFive-unsigned.ipa" \
-            "Payload"
-
-          test -f "ThreeOneOSFive-unsigned.ipa"
-
-          echo ""
-          echo "===== IPA CREATED ====="
-
-          ls -lh \
-            "ThreeOneOSFive-unsigned.ipa"
-
-      # =========================================
-      # 11. UPLOAD IPA
-      # =========================================
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: ThreeOneOSFive-unsigned
-          path: ${{ runner.temp }}/ThreeOneOSFive-unsigned.ipa
+          name: 3105-unsigned
+          path: ${{ runner.temp }}/3105-unsigned.ipa
           if-no-files-found: error
           retention-days: 7
 
-      # =========================================
-      # 12. UPLOAD LOGS IF FAILED
-      # =========================================
-      - name: Upload build logs
+      - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ThreeOneOSFive-build-logs
-          path: |
-            ${{ runner.temp }}/DerivedData/Logs
+          name: 3105-build-logs
+          path: ${{ runner.temp }}/DerivedData/Logs
           if-no-files-found: ignore
           retention-days: 7
