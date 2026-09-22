@@ -5,89 +5,146 @@ on:
     branches:
       - main
       - master
+
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
+  group: threeoneosfive-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build iOS app
+    name: Build ThreeOneOSFive
     runs-on: macos-14
     timeout-minutes: 45
 
     steps:
-      - name: Checkout
+      # =========================
+      # 1. CHECKOUT
+      # =========================
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Show repository
+      # =========================
+      # 2. XCODE
+      # =========================
+      - name: Check Xcode
+        run: |
+          xcodebuild -version
+          xcode-select -p
+
+      # =========================
+      # 3. CHECK PROJECT
+      # =========================
+      - name: Verify project structure
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           echo "===== ROOT ====="
-          pwd
           ls -la
 
-          echo "===== XCODE PROJECTS ====="
-          find . -maxdepth 4 \
-            -name "*.xcodeproj" \
-            -print
+          echo ""
+          echo "===== XCODE PROJECT ====="
 
-          echo "===== WORKSPACES ====="
-          find . -maxdepth 4 \
-            -name "*.xcworkspace" \
-            -print
-
-      - name: Find Xcode project
-        shell: bash
-        run: |
-          set -e
-
-          PROJECT=$(find . -maxdepth 4 -name "ThreeOneOSFive.xcodeproj" -print -quit)
-
-          if [ -z "$PROJECT" ]; then
-            echo "ERROR: ThreeOneOSFive.xcodeproj not found."
-            echo "Available Xcode projects:"
-            find . -maxdepth 5 -name "*.xcodeproj" -print
+          if [ ! -f "ThreeOneOSFive.xcodeproj/project.pbxproj" ]; then
+            echo "ERROR: ThreeOneOSFive.xcodeproj/project.pbxproj not found."
             exit 1
           fi
 
-          PROJECT="${PROJECT#./}"
+          echo "Xcode project: OK"
 
-          echo "Found project:"
-          echo "$PROJECT"
+          echo ""
+          echo "===== SOURCE ====="
 
-          echo "PROJECT_PATH=$PROJECT" >> "$GITHUB_ENV"
+          test -f "ThreeOneOSFive/App.swift"
+          test -f "ThreeOneOSFive/ContentView.swift"
+          test -f "ThreeOneOSFive/Info.plist"
 
-      - name: Xcode version
-        run: |
-          xcodebuild -version
+          echo "Swift source: OK"
+          echo "Info.plist: OK"
 
-      - name: Check project and schemes
+          echo ""
+          echo "===== ASSETS ====="
+
+          test -d "ThreeOneOSFive/Assets.xcassets"
+
+          echo "Assets.xcassets: OK"
+
+      # =========================
+      # 4. CHECK IMPORTANT FILES
+      # =========================
+      - name: Verify restored files
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "Project: $PROJECT_PATH"
+          files=(
+            "ThreeOneOSFive/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+            "ThreeOneOSFive/Assets.xcassets/AppIcon.appiconset/Contents.json"
+            "ThreeOneOSFive/Assets.xcassets/AppIcon.appiconset/IMG_2463.jpg"
+            "ThreeOneOSFive/Assets.xcassets/Contents.json"
+            "ThreeOneOSFive/Assets.xcassets/Max.imageset/Contents.json"
+            "ThreeOneOSFive/Assets.xcassets/Max.imageset/icon.png"
+            "ThreeOneOSFive/Assets.xcassets/Normal.imageset/Contents.json"
+            "ThreeOneOSFive/Assets.xcassets/Normal.imageset/icon.png"
+            "ThreeOneOSFive/helpers/ContainerBrowserLogic.swift"
+            "ThreeOneOSFive/helpers/DisplayIdentityAttribution.swift"
+            "ThreeOneOSFive/helpers/FileOperationCoordinator.swift"
+            "ThreeOneOSFive/helpers/PatchDraftCoordinator.swift"
+            "ThreeOneOSFive/helpers/PatchPackageCodec.swift"
+            "ThreeOneOSFive/vi.lproj/Localizable.strings"
+            "ThreeOneOSFive/views/OnboardingView.swift"
+            "ThreeOneOSFive/zh-Hans.lproj/Localizable.strings"
+          )
+
+          missing=0
+
+          for file in "${files[@]}"; do
+            if [ -f "$file" ]; then
+              echo "OK      $file"
+            else
+              echo "MISSING $file"
+              missing=$((missing + 1))
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo ""
+            echo "ERROR: $missing required file(s) are missing."
+            exit 1
+          fi
+
+          echo ""
+          echo "All restored files are present."
+
+      # =========================
+      # 5. SHOW PROJECT TARGET
+      # =========================
+      - name: Check Xcode schemes
+        shell: bash
+        run: |
+          set -euo pipefail
 
           xcodebuild \
             -list \
-            -project "$PROJECT_PATH"
+            -project "ThreeOneOSFive.xcodeproj"
 
-      - name: Build unsigned
+      # =========================
+      # 6. CLEAN
+      # =========================
+      - name: Clean build
         shell: bash
         run: |
-          set -e
-
-          echo "Building $PROJECT_PATH"
+          set -euo pipefail
 
           xcodebuild \
-            -project "$PROJECT_PATH" \
+            -project "ThreeOneOSFive.xcodeproj" \
             -scheme "ThreeOneOSFive" \
             -configuration Release \
             -sdk iphoneos \
@@ -96,57 +153,111 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            clean build
+            clean
 
+      # =========================
+      # 7. BUILD
+      # =========================
+      - name: Build unsigned app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xcodebuild \
+            -project "ThreeOneOSFive.xcodeproj" \
+            -scheme "ThreeOneOSFive" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      # =========================
+      # 8. FIND APP
+      # =========================
       - name: Find built app
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "===== BUILT APPS ====="
+          echo "===== BUILD PRODUCTS ====="
 
-          find "$RUNNER_TEMP/DerivedData" \
-            -name "*.app" \
+          find "$RUNNER_TEMP/DerivedData/Build/Products" \
+            -maxdepth 3 \
             -type d \
+            -name "*.app" \
             -print
 
-      - name: Package IPA
-        shell: bash
-        run: |
-          set -e
-
-          APP_PATH=$(find "$RUNNER_TEMP/DerivedData" \
-            -path "*/Build/Products/Release-iphoneos/*.app" \
+          APP_PATH=$(find \
+            "$RUNNER_TEMP/DerivedData/Build/Products" \
             -type d \
+            -name "ThreeOneOSFive.app" \
             -print -quit)
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app was not created."
+            echo "ERROR: ThreeOneOSFive.app was not created."
             exit 1
           fi
 
-          echo "Using app:"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "Built app:"
           echo "$APP_PATH"
 
+      # =========================
+      # 9. CREATE IPA
+      # =========================
+      - name: Create unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
           rm -rf "$RUNNER_TEMP/Payload"
+
           mkdir -p "$RUNNER_TEMP/Payload"
 
-          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
+          cp -R "$APP_PATH" \
+            "$RUNNER_TEMP/Payload/ThreeOneOSFive.app"
 
           cd "$RUNNER_TEMP"
 
-          zip -qry \
+          rm -f "ThreeOneOSFive-unsigned.ipa"
+
+          /usr/bin/zip \
+            -qry \
             "ThreeOneOSFive-unsigned.ipa" \
-            Payload
+            "Payload"
 
-          test -f "ThreeOneOSFive-unsigned.ipa"
+          test -f "$RUNNER_TEMP/ThreeOneOSFive-unsigned.ipa"
 
-          echo "IPA created successfully."
+          echo ""
+          echo "IPA created successfully:"
+          ls -lh "$RUNNER_TEMP/ThreeOneOSFive-unsigned.ipa"
 
+      # =========================
+      # 10. UPLOAD IPA
+      # =========================
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: ThreeOneOSFive-unsigned
           path: ${{ runner.temp }}/ThreeOneOSFive-unsigned.ipa
           if-no-files-found: error
+          retention-days: 7
+
+      # =========================
+      # 11. UPLOAD APP LOG
+      # =========================
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ThreeOneOSFive-build-logs
+          path: |
+            ${{ runner.temp }}/DerivedData/Logs
+          if-no-files-found: ignore
           retention-days: 7
