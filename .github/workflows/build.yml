@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+
   workflow_dispatch:
 
 permissions:
@@ -22,17 +23,17 @@ jobs:
 
     steps:
 
-      # =========================
+      # =========================================
       # 1. CHECKOUT
-      # =========================
+      # =========================================
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # =========================
+      # =========================================
       # 2. XCODE
-      # =========================
+      # =========================================
       - name: Check Xcode
         run: |
           set -euo pipefail
@@ -40,9 +41,9 @@ jobs:
           xcodebuild -version
           xcode-select -p
 
-      # =========================
+      # =========================================
       # 3. CHECK PROJECT
-      # =========================
+      # =========================================
       - name: Check project
         shell: bash
         run: |
@@ -53,9 +54,9 @@ jobs:
 
           echo "Xcode project OK"
 
-      # =========================
+      # =========================================
       # 4. ORGANIZE SOURCE
-      # =========================
+      # =========================================
       - name: Organize source
         shell: bash
         run: |
@@ -63,7 +64,7 @@ jobs:
 
           mkdir -p "ThreeOneOSFive"
 
-          # Root Swift / plist files
+          # Root source files
           for file in \
             "App.swift" \
             "ContentView.swift" \
@@ -77,7 +78,7 @@ jobs:
             fi
           done
 
-          # Source folders
+          # Source directories
           for dir in \
             "helpers" \
             "views" \
@@ -88,25 +89,22 @@ jobs:
             "kexploit"
           do
             if [ -d "$dir" ]; then
-
               mkdir -p "ThreeOneOSFive/$dir"
-
               cp -R "$dir"/. "ThreeOneOSFive/$dir"/
-
               rm -rf "$dir"
             fi
           done
 
           echo ""
-          echo "===== SOURCE ====="
+          echo "===== SOURCE TREE ====="
 
           find "ThreeOneOSFive" \
             -maxdepth 2 \
             -print | sort
 
-      # =========================
-      # 5. VERIFY CODE
-      # =========================
+      # =========================================
+      # 5. VERIFY SOURCE
+      # =========================================
       - name: Verify source
         shell: bash
         run: |
@@ -116,14 +114,14 @@ jobs:
           test -f "ThreeOneOSFive/ContentView.swift"
           test -f "ThreeOneOSFive/Info.plist"
 
-          echo "App.swift       OK"
-          echo "ContentView     OK"
-          echo "Info.plist      OK"
+          echo "App.swift OK"
+          echo "ContentView.swift OK"
+          echo "Info.plist OK"
 
-      # =========================
-      # 6. SHOW SCHEME
-      # =========================
-      - name: Check schemes
+      # =========================================
+      # 6. LIST PROJECT TARGETS
+      # =========================================
+      - name: Check Xcode targets
         shell: bash
         run: |
           set -euo pipefail
@@ -132,9 +130,9 @@ jobs:
             -list \
             -project "ThreeOneOSFive.xcodeproj"
 
-      # =========================
+      # =========================================
       # 7. CLEAN
-      # =========================
+      # =========================================
       - name: Clean
         shell: bash
         run: |
@@ -142,7 +140,7 @@ jobs:
 
           xcodebuild \
             -project "ThreeOneOSFive.xcodeproj" \
-            -scheme "ThreeOneOSFive" \
+            -target "3105" \
             -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
@@ -152,9 +150,9 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             clean
 
-      # =========================
+      # =========================================
       # 8. BUILD
-      # =========================
+      # =========================================
       - name: Build unsigned
         shell: bash
         run: |
@@ -162,7 +160,7 @@ jobs:
 
           xcodebuild \
             -project "ThreeOneOSFive.xcodeproj" \
-            -scheme "ThreeOneOSFive" \
+            -target "3105" \
             -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
@@ -172,33 +170,42 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
-      # =========================
+      # =========================================
       # 9. FIND APP
-      # =========================
-      - name: Find app
+      # =========================================
+      - name: Find built app
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "===== BUILD PRODUCTS ====="
+
+          find \
+            "$RUNNER_TEMP/DerivedData/Build/Products" \
+            -type d \
+            -name "*.app" \
+            -print
+
           APP_PATH=$(find \
             "$RUNNER_TEMP/DerivedData/Build/Products" \
             -type d \
-            -name "ThreeOneOSFive.app" \
+            -name "*.app" \
             -print -quit)
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: ThreeOneOSFive.app not found."
+            echo "ERROR: No .app was created."
             exit 1
           fi
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-          echo "App found:"
+          echo ""
+          echo "APP FOUND:"
           echo "$APP_PATH"
 
-      # =========================
+      # =========================================
       # 10. CREATE IPA
-      # =========================
+      # =========================================
       - name: Create unsigned IPA
         shell: bash
         run: |
@@ -210,24 +217,28 @@ jobs:
 
           cp -R \
             "$APP_PATH" \
-            "$RUNNER_TEMP/Payload/ThreeOneOSFive.app"
+            "$RUNNER_TEMP/Payload/"
 
           cd "$RUNNER_TEMP"
+
+          rm -f "ThreeOneOSFive-unsigned.ipa"
 
           /usr/bin/zip \
             -qry \
             "ThreeOneOSFive-unsigned.ipa" \
-            Payload
+            "Payload"
 
           test -f "ThreeOneOSFive-unsigned.ipa"
 
           echo ""
-          echo "IPA created:"
-          ls -lh "ThreeOneOSFive-unsigned.ipa"
+          echo "===== IPA CREATED ====="
 
-      # =========================
+          ls -lh \
+            "ThreeOneOSFive-unsigned.ipa"
+
+      # =========================================
       # 11. UPLOAD IPA
-      # =========================
+      # =========================================
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
@@ -236,10 +247,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # =========================
-      # 12. LOGS IF FAILED
-      # =========================
-      - name: Upload logs
+      # =========================================
+      # 12. UPLOAD LOGS IF FAILED
+      # =========================================
+      - name: Upload build logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
