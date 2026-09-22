@@ -1,123 +1,143 @@
-# FILE: .github/workflows/build.yml
+import SwiftUI
 
-name: Build ThreeOneOSFive
+struct OnboardingView: View {
+    @EnvironmentObject private var settings: AppSettings
+    @Environment(\.appLanguage) private var language
 
-on:
-  push:
-    branches:
-      - main
-      - master
-  pull_request:
-    branches:
-      - main
-      - master
-  workflow_dispatch:
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @State private var step = 0
 
-permissions:
-  contents: read
+    private let totalSteps = 4
 
-concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(language.text("onboarding.step", "\(step + 1)", "\(totalSteps)"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.top, 16)
 
-jobs:
-  build:
-    name: Build iOS app (unsigned)
-    runs-on: macos-14
-    timeout-minutes: 30
+            TabView(selection: $step) {
+                languageStep.tag(0)
+                welcomeStep.tag(1)
+                versionsStep.tag(2)
+                installStep.tag(3)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+            HStack {
+                if step > 0 {
+                    Button(language.text("common.back")) {
+                        withAnimation { step -= 1 }
+                    }
+                }
 
-      - name: Select Xcode
-        run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app
-          xcodebuild -version
+                Spacer()
 
-      - name: Verify project files
-        shell: bash
-        run: |
-          set -euo pipefail
+                Button(step == totalSteps - 1
+                       ? language.text("common.finish")
+                       : language.text("common.next")) {
+                    if step == totalSteps - 1 {
+                        hasCompletedOnboarding = true
+                    } else {
+                        withAnimation { step += 1 }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(20)
+        }
+    }
 
-          test -f "ThreeOneOSFive.xcodeproj/project.pbxproj"
-          test -f "ThreeOneOSFive/Info.plist"
-          test -f "ThreeOneOSFive/App.swift"
-          test -d "ThreeOneOSFive/Assets.xcassets"
+    private var languageStep: some View {
+        VStack(spacing: 16) {
+            Text(language.text("onboarding.language_title"))
+                .font(.title2.bold())
+            Text(language.text("onboarding.language_subtitle"))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
-          echo "Project structure OK"
+            ForEach(AppLanguage.allCases) { item in
+                Button {
+                    UserDefaults.standard.set(item.rawValue, forKey: AppLanguage.storageKey)
+                } label: {
+                    HStack {
+                        Text(item.displayName)
+                        Spacer()
+                        if item == language {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                    .padding()
+                }
+            }
 
-      - name: Check Xcode project
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild -list \
-            -project "ThreeOneOSFive.xcodeproj"
+            Text(language.text("onboarding.language_hint"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(24)
+    }
 
-      - name: Build
-        shell: bash
-        run: |
-          set -euo pipefail
+    private var welcomeStep: some View {
+        VStack(spacing: 12) {
+            Text(language.text("onboarding.welcome_title"))
+                .font(.title.bold())
+            Text(language.text("onboarding.welcome_message"))
+                .foregroundStyle(.secondary)
+            Text(language.text("onboarding.welcome_badge"))
+                .font(.caption.bold())
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.thinMaterial, in: Capsule())
+        }
+        .padding(24)
+    }
 
-          xcodebuild \
-            -project "ThreeOneOSFive.xcodeproj" \
-            -scheme "ThreeOneOSFive" \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            clean build
+    private var versionsStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(language.text("onboarding.versions_title"))
+                .font(.title2.bold())
+            Text(language.text("onboarding.versions_subtitle"))
+                .foregroundStyle(.secondary)
 
-      - name: Locate built app
-        id: locate
-        shell: bash
-        run: |
-          set -euo pipefail
+            versionRow("iOS \(ExploitSupportPolicy.verifiedIOS17Range)")
+            versionRow("iOS \(ExploitSupportPolicy.verifiedIOS18Range)")
+            versionRow("iOS \(ExploitSupportPolicy.verifiedIOS26Range)")
+            versionRow("iOS 27.0 Developer Beta 1–4 / Public Beta 1–2")
 
-          APP_PATH=$(find "$RUNNER_TEMP/DerivedData/Build/Products" \
-            -maxdepth 2 \
-            -type d \
-            -name "*.app" \
-            | head -n 1)
+            Text(language.text(
+                "onboarding.versions_footer",
+                AppInfo.osVersion,
+                AppInfo.osBuild
+            ))
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.top, 8)
+        }
+        .padding(24)
+    }
 
-          if [ -z "$APP_PATH" ]; then
-            echo "No .app bundle found" >&2
-            exit 1
-          fi
+    private var installStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(language.text("onboarding.install_title"))
+                .font(.title2.bold())
+            Text(language.text("onboarding.install_message"))
+                .foregroundStyle(.secondary)
+            labelRow("checkmark.circle.fill", language.text("onboarding.install_ok"))
+            labelRow("xmark.circle.fill", language.text("onboarding.install_bad"))
+            labelRow("exclamationmark.triangle.fill", language.text("onboarding.install_jailbreak"))
+            Text(language.text("onboarding.install_footer"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(24)
+    }
 
-          echo "Found app: $APP_PATH"
-          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
-          echo "app_name=$(basename "$APP_PATH" .app)" >> "$GITHUB_OUTPUT"
+    private func versionRow(_ text: String) -> some View {
+        Label(text, systemImage: "checkmark.seal")
+    }
 
-      - name: Package unsigned IPA
-        id: package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APP_PATH="${{ steps.locate.outputs.app_path }}"
-          APP_NAME="${{ steps.locate.outputs.app_name }}"
-
-          rm -rf "$RUNNER_TEMP/Payload"
-          mkdir -p "$RUNNER_TEMP/Payload"
-          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
-
-          cd "$RUNNER_TEMP"
-          /usr/bin/zip -qry \
-            "${APP_NAME}-unsigned.ipa" \
-            Payload
-
-          echo "ipa_path=$RUNNER_TEMP/${APP_NAME}-unsigned.ipa" >> "$GITHUB_OUTPUT"
-
-      - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: ThreeOneOSFive-unsigned
-          path: ${{ steps.package.outputs.ipa_path }}
-          if-no-files-found: error
-          retention-days: 7
+    private func labelRow(_ icon: String, _ text: String) -> some View {
+        Label(text, systemImage: icon)
+    }
+}
