@@ -219,4 +219,446 @@ enum PatchTransaction {
                 try atomicWrite(
                     resolved.rule.replacementData,
                     to: resolved.target,
-                   
+                    preservingExistingAttributes: true,
+                    fileManager: fileManager
+                )
+                guard try digestFile(resolved.target) == records[index].replacementDigest else {
+                    throw PatchPackageError.applyFailed
+                }
+            }
+            journal.status = .applied
+            try writeJournal(journal, to: journalURL)
+            return PatchTransactionReceipt(
+                id: transactionID,
+                projectID: project.id,
+                journalURL: journalURL
+            )
+        } catch {
+            do {
+                try restoreRecords(
+                    records,
+                    transactionDirectory: transactionDirectory,
+                    roots: roots,
+                    requirePatchedDigest: false,
+                    createdDirectories: createdDirectories,
+                    fileManager: fileManager
+                )
+                journal.status = .rolledBack
+                try writeJournal(journal, to: journalURL)
+            } catch {
+                // Preserve the prepared journal and backups for explicit recovery.
+            }
+            throw PatchPackageError.applyFailed
+        }
+    }
+
+    static func restore(
+        receipt: PatchTransactionReceipt,
+        containerResolver: (String) throws -> URL,
+        fileManager: FileManager = .default
+    ) throws {
+        var journal: Journal
+        do {
+            journal = try readJournal(receipt.journalURL)
+        } catch {
+            throw PatchPackageError.restoreFailed
+        }
+
+        guard journal.schemaVersion == schemaVersion,
+              journal.transactionID == receipt.id,
+              journal.projectID == receipt.projectID else {
+            throw PatchPackageError.restoreFailed
+        }
+
+        guard journal.status == .applied || journal.status == .prepared else {
+            if journal.status == .restored || journal.status == .rolledBack {
+                return
+            }
+            throw PatchPackageError.restoreFailed
+        }
+
+        var roots: [String: URL] = [:]
+        for record in journal.records {
+            do {
+                roots[record.bundleID] = PatchPathValidator.canonicalFileURL(
+                    try containerResolver(record.bundleID)
+                )
+            } catch {
+                throw PatchPackageError.restoreFailed
+            }
+        }
+        for directory in journal.createdDirectories ?? [] {
+            if roots[directory.bundleID] == nil {
+                do {
+                    roots[directory.bundleID] = PatchPathValidator.canonicalFileURL(
+                        try containerResolver(directory.bundleID)
+                    )
+                } catch {
+                    throw PatchPackageError.restoreFailed
+                }
+            }
+        }
+
+        let transactionDirectory = receipt.journalURL.deletingLastPathComponent()
+        do {
+            try restoreRecords(
+                journal.records,
+                transactionDirectory: transactionDirectory,
+                roots: roots,
+                requirePatchedDigest: journal.status == .applied,
+                createdDirectories: journal.createdDirectories ?? [],
+                fileManager: fileManager
+            )
+            journal.status = .restored
+            try writeJournal(journal, to: receipt.journalURL)
+        } catch let error as PatchPackageError {
+            throw error
+        } catch {
+            throw PatchPackageError.restoreFailed
+        }
+    }
+
+    static func rollbackPrepared(
+        receipt: PatchTransactionReceipt,
+        containerResolver: (String) throws -> URL,
+        fileManager: FileManager = .default
+    ) throws {
+        var journal = try readJournal(receipt.journalURL)
+        guard journal.schemaVersion == schemaVersion,
+              journal.transactionID == receipt.id,
+              journal.projectID == receipt.projectID,
+              journal.status == .prepared else {
+            throw PatchPackageError.restoreFailed
+        }
+
+        var roots: [String: URL] = [:]
+        for record in journal.records {
+            roots[record.bundleID] = PatchPathValidator.canonicalFileURL(
+                try containerResolver(record.bundleID)
+            )
+        }
+        for directory in journal.createdDirectories ?? [] {
+            if roots[directory.bundleID] == nil {
+                roots[directory.bundleID] = PatchPathValidator.canonicalFileURL(
+                    try containerResolver(directory.bundleID)
+                )
+            }
+        }
+
+        let transactionDirectory = receipt.journalURL.deletingLastPathComponent()
+        try restoreRecords(
+            journal.records,
+            transactionDirectory: transactionDirectory,
+            roots: roots,
+            requirePatchedDigest: false,
+            createdDirectories: journal.createdDirectories ?? [],
+            fileManager: fileManager
+        )
+        journal.status = .rolledBack
+        try writeJournal(journal, to: receipt.journalURL)
+    }
+
+    static func receipts(
+        in backupRoot: URL,
+        projectID: UUID? = nil,
+        fileManager: FileManager = .default
+    ) -> [PatchTransactionReceipt] {
+        let projectDirectories: [URL]
+        if let projectID {
+            projectDirectories = [
+                backupRoot.appendingPathComponent(projectID.uuidString, isDirectory: true)
+            ]
+        } else {
+            projectDirectories = (try? fileManager.contentsOfDirectory(
+                at: backupRoot,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+        }
+
+        var result: [PatchTransactionReceipt] = []
+        for projectDirectory in projectDirectories {
+            guard UUID(uuidString: projectDirectory.lastPathComponent) != nil else { continue }
+            let transactions = (try? fileManager.contentsOfDirectory(
+                at: projectDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            for transactionDirectory in transactions {
+                guard UUID(uuidString: transactionDirectory.lastPathComponent) != nil else { continue }
+                let journalURL = transactionDirectory.appendingPathComponent(journalFilename)
+                guard let journal = try? readJournal(journalURL),
+                      journal.schemaVersion == schemaVersion,
+                      journal.transactionID == UUID(uuidString: transactionDirectory.lastPathComponent),
+                      journal.projectID == UUID(uuidString: projectDirectory.lastPathComponent) else {
+                    continue
+                }
+                result.append(PatchTransactionReceipt(
+                    id: journal.transactionID,
+                    projectID: journal.projectID,
+                    journalURL: journalURL
+                ))
+            }
+        }
+        return result.sorted {
+            (try? readJournal($0.journalURL).createdAt) ?? .distantPast >
+            (try? readJournal($1.journalURL).createdAt) ?? .distantPast
+        }
+    }
+
+    static func latestReceipt(
+        in backupRoot: URL,
+        projectID: UUID,
+        fileManager: FileManager = .default
+    ) -> PatchTransactionReceipt? {
+        receipts(
+            in: backupRoot,
+            projectID: projectID,
+            fileManager: fileManager
+        )
+        .compactMap { receipt -> (Date, PatchTransactionReceipt)? in
+            guard let journal = try? readJournal(receipt.journalURL) else { return nil }
+            return (journal.createdAt, receipt)
+        }
+        .sorted { $0.0 > $1.0 }
+        .first
+        .map {
+            PatchTransactionReceipt(
+                id: $0.0.transactionID,
+                projectID: $0.0.projectID,
+                journalURL: $0.1
+            )
+        }
+    }
+
+    static func requiredBundleIdentifiers(for receipt: PatchTransactionReceipt) throws -> [String] {
+        let journal = try readJournal(receipt.journalURL)
+        guard journal.schemaVersion == schemaVersion,
+              journal.transactionID == receipt.id,
+              journal.projectID == receipt.projectID else {
+            throw PatchPackageError.restoreFailed
+        }
+        var seen = Set<String>()
+        return (journal.records.map(\.bundleID)
+            + (journal.createdDirectories ?? []).map(\.bundleID)).compactMap { bundleID in
+                seen.insert(bundleID).inserted ? bundleID : nil
+            }
+    }
+
+    private static func restoreRecords(
+        _ records: [Record],
+        transactionDirectory: URL,
+        roots: [String: URL],
+        requirePatchedDigest: Bool,
+        createdDirectories: [DirectoryRecord],
+        fileManager: FileManager
+    ) throws {
+        var resolvedTargets: [(Record, URL)] = []
+        for record in records {
+            guard let root = roots[record.bundleID],
+                  containerFingerprint(root) == record.containerFingerprint else {
+                throw PatchPackageError.restoreFailed
+            }
+            let target = try PatchPathValidator.resolveContainedTargetURL(
+                relativePath: record.relativePath,
+                containerRoot: root
+            )
+            try validateFileTarget(
+                target,
+                relativePath: record.relativePath,
+                containerRoot: root,
+                allowMissingParents: !requirePatchedDigest,
+                fileManager: fileManager
+            )
+
+            if requirePatchedDigest {
+                guard fileManager.fileExists(atPath: target.path),
+                      try digestFile(target) == record.replacementDigest else {
+                    throw PatchPackageError.restoreFailed
+                }
+            }
+            if record.originalExisted {
+                guard let backupFilename = record.backupFilename,
+                      let expectedDigest = record.originalDigest else {
+                    throw PatchPackageError.restoreFailed
+                }
+                let backup = transactionDirectory.appendingPathComponent(backupFilename)
+                guard fileManager.fileExists(atPath: backup.path),
+                      try digestFile(backup) == expectedDigest else {
+                    throw PatchPackageError.restoreFailed
+                }
+            }
+            resolvedTargets.append((record, target))
+        }
+
+        for (record, target) in resolvedTargets.reversed() {
+            if record.originalExisted {
+                let backup = transactionDirectory.appendingPathComponent(record.backupFilename!)
+                try atomicCopy(backup, to: target, fileManager: fileManager)
+            } else if fileManager.fileExists(atPath: target.path) {
+                try fileManager.removeItem(at: target)
+            }
+        }
+
+        for directory in createdDirectories.reversed() {
+            guard let root = roots[directory.bundleID],
+                  containerFingerprint(root) == directory.containerFingerprint else {
+                throw PatchPackageError.restoreFailed
+            }
+            let target = try PatchPathValidator.resolveContainedTargetURL(
+                relativePath: directory.relativePath,
+                containerRoot: root
+            )
+            guard fileManager.fileExists(atPath: target.path) else { continue }
+            let values = try target.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true, values.isDirectory == true else {
+                throw PatchPackageError.restoreFailed
+            }
+            let contents = try fileManager.contentsOfDirectory(atPath: target.path)
+            if contents.isEmpty {
+                try fileManager.removeItem(at: target)
+            }
+        }
+    }
+
+    private static func validateFileTarget(
+        _ target: URL,
+        relativePath: String,
+        containerRoot: URL,
+        allowMissingParents: Bool,
+        fileManager: FileManager
+    ) throws {
+        let components = try PatchPathValidator.canonicalRelativePath(relativePath)
+            .split(separator: "/")
+            .map(String.init)
+        var cursor = PatchPathValidator.canonicalFileURL(containerRoot)
+        for component in components.dropLast() {
+            cursor.appendPathComponent(component, isDirectory: true)
+            guard fileManager.fileExists(atPath: cursor.path) else {
+                if allowMissingParents { break }
+                throw PatchPackageError.applyFailed
+            }
+            let values = try cursor.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true else {
+                throw PatchPackageError.symbolicLinkUnsupported
+            }
+            guard values.isDirectory == true else {
+                throw PatchPackageError.applyFailed
+            }
+        }
+        if fileManager.fileExists(atPath: target.path) {
+            let values = try target.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true else {
+                throw PatchPackageError.symbolicLinkUnsupported
+            }
+            guard values.isDirectory != true else {
+                throw PatchPackageError.applyFailed
+            }
+        }
+    }
+
+    private static func validateDirectoryTarget(
+        _ target: URL,
+        relativePath: String,
+        containerRoot: URL,
+        fileManager: FileManager
+    ) throws {
+        let components = try PatchPathValidator.canonicalRelativePath(relativePath)
+            .split(separator: "/").map(String.init)
+        var cursor = PatchPathValidator.canonicalFileURL(containerRoot)
+        for component in components {
+            cursor.appendPathComponent(component, isDirectory: true)
+            guard fileManager.fileExists(atPath: cursor.path) else { break }
+            let values = try cursor.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true else {
+                throw PatchPackageError.symbolicLinkUnsupported
+            }
+            guard values.isDirectory == true else {
+                throw PatchPackageError.applyFailed
+            }
+        }
+        if fileManager.fileExists(atPath: target.path) {
+            let values = try target.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true, values.isDirectory == true else {
+                throw PatchPackageError.applyFailed
+            }
+        }
+    }
+
+    private static func directoryKeySort(_ lhs: String, _ rhs: String) -> Bool {
+        let leftDepth = lhs.filter { $0 == "/" }.count
+        let rightDepth = rhs.filter { $0 == "/" }.count
+        return leftDepth == rightDepth ? lhs < rhs : leftDepth < rightDepth
+    }
+
+    private static func atomicWrite(
+        _ data: Data,
+        to target: URL,
+        preservingExistingAttributes: Bool,
+        fileManager: FileManager
+    ) throws {
+        let staging = target.deletingLastPathComponent()
+            .appendingPathComponent(".3105-patch-\(UUID().uuidString)")
+        var attributes: [FileAttributeKey: Any] = [:]
+        if preservingExistingAttributes,
+           let current = try? fileManager.attributesOfItem(atPath: target.path) {
+            if let permissions = current[.posixPermissions] { attributes[.posixPermissions] = permissions }
+            if let protection = current[.protectionKey] { attributes[.protectionKey] = protection }
+        }
+        guard fileManager.createFile(atPath: staging.path, contents: data, attributes: attributes) else {
+            throw PatchPackageError.applyFailed
+        }
+        defer { try? fileManager.removeItem(at: staging) }
+        let handle = try FileHandle(forWritingTo: staging)
+        try handle.synchronize()
+        try handle.close()
+        guard rename(staging.path, target.path) == 0 else {
+            throw PatchPackageError.applyFailed
+        }
+    }
+
+    private static func atomicCopy(
+        _ source: URL,
+        to target: URL,
+        fileManager: FileManager
+    ) throws {
+        let staging = target.deletingLastPathComponent()
+            .appendingPathComponent(".3105-restore-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: staging) }
+        try fileManager.copyItem(at: source, to: staging)
+        let handle = try FileHandle(forWritingTo: staging)
+        try handle.synchronize()
+        try handle.close()
+        guard rename(staging.path, target.path) == 0 else {
+            throw PatchPackageError.restoreFailed
+        }
+    }
+
+    private static func writeJournal(_ journal: Journal, to url: URL) throws {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        try encoder.encode(journal).write(to: url, options: .atomic)
+    }
+
+    private static func readJournal(_ url: URL) throws -> Journal {
+        try PropertyListDecoder().decode(Journal.self, from: Data(contentsOf: url))
+    }
+
+    private static func digest(_ data: Data) -> Data {
+        Data(SHA256.hash(data: data))
+    }
+
+    private static func digestFile(_ url: URL) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1_024 * 1_024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return Data(hasher.finalize())
+    }
+
+    private static func containerFingerprint(_ url: URL) -> Data {
+        digest(Data(PatchPathValidator.canonicalFileURL(url).path.utf8))
+    }
+}
