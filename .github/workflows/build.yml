@@ -1,10 +1,8 @@
-name: Build ThreeOneOSFive
+name: Build 3105
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -16,70 +14,63 @@ concurrency:
 
 jobs:
   build:
-    name: Build ThreeOneOSFive
+    name: Build 3105
     runs-on: macos-14
     timeout-minutes: 45
 
     steps:
-
-      # =========================================
-      # 1. CHECKOUT
-      # =========================================
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      # =========================================
-      # 2. CHECK XCODE
-      # =========================================
       - name: Check Xcode
         run: |
-          set -euo pipefail
-
           xcodebuild -version
           xcode-select -p
 
-      # =========================================
-      # 3. CHECK PROJECT
-      # =========================================
-      - name: Check project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -d "ThreeOneOSFive.xcodeproj"
-          test -f "ThreeOneOSFive.xcodeproj/project.pbxproj"
-
-          echo "Xcode project OK"
-
-      # =========================================
-      # 4. ORGANIZE SOURCE
-      # =========================================
       - name: Organize source
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "ThreeOneOSFive"
+          mkdir -p ThreeOneOSFive/helpers
+          mkdir -p ThreeOneOSFive/views
 
+          # File lẻ ở ROOT -> helpers
           for file in \
-            "App.swift" \
-            "ContentView.swift" \
-            "Info.plist" \
-            "ThreeOneOSFive-Bridging-Header.h"
+            ContainerBrowserLogic.swift \
+            DisplayIdentityAttribution.swift \
+            FileOperationCoordinator.swift \
+            PatchDraftCoordinator.swift \
+            PatchPackageCodec.swift
+          do
+            if [ -f "$file" ]; then
+              mv -f "$file" "ThreeOneOSFive/helpers/$file"
+              echo "MOVED $file -> ThreeOneOSFive/helpers/"
+            fi
+          done
+
+          # Onboarding nếu bị up nhầm root
+          if [ -f "OnboardingView.swift" ]; then
+            mv -f "OnboardingView.swift" "ThreeOneOSFive/views/OnboardingView.swift"
+          fi
+
+          # File app ở root
+          for file in \
+            App.swift \
+            ContentView.swift \
+            Info.plist \
+            ThreeOneOSFive-Bridging-Header.h
           do
             if [ -f "$file" ] && [ ! -f "ThreeOneOSFive/$file" ]; then
               mv "$file" "ThreeOneOSFive/$file"
             fi
           done
 
+          # Folder ở root
           for dir in \
-            "helpers" \
-            "views" \
-            "vi.lproj" \
-            "zh-Hans.lproj" \
-            "en.lproj"
+            Assets.xcassets helpers views \
+            vi.lproj zh-Hans.lproj en.lproj \
+            exploit kexploit
           do
             if [ -d "$dir" ]; then
               mkdir -p "ThreeOneOSFive/$dir"
@@ -88,176 +79,97 @@ jobs:
             fi
           done
 
-          echo "===== SOURCE TREE ====="
-          find "ThreeOneOSFive" -maxdepth 2 -print | sort
+          echo "===== helpers ====="
+          ls -1 ThreeOneOSFive/helpers || true
+          echo "===== views ====="
+          ls -1 ThreeOneOSFive/views || true
 
-      # =========================================
-      # 5. VERIFY SOURCE
-      # =========================================
-      - name: Verify source
+      - name: Ensure Assets.xcassets
         shell: bash
         run: |
           set -euo pipefail
+          ASSETS="ThreeOneOSFive/Assets.xcassets"
+          mkdir -p "$ASSETS/AppIcon.appiconset" "$ASSETS/Max.imageset" "$ASSETS/Normal.imageset"
+          [ -f "$ASSETS/Contents.json" ] || echo '{"info":{"author":"xcode","version":1}}' > "$ASSETS/Contents.json"
 
-          test -f "ThreeOneOSFive/App.swift"
-          test -f "ThreeOneOSFive/ContentView.swift"
-          test -f "ThreeOneOSFive/Info.plist"
-
-          echo "App.swift OK"
-          echo "ContentView.swift OK"
-          echo "Info.plist OK"
-
-      # =========================================
-      # 6. LIST TARGETS
-      # =========================================
-      - name: Check Xcode targets
+      - name: Create shared scheme
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p ThreeOneOSFive.xcodeproj/xcshareddata/xcschemes
+          cat > ThreeOneOSFive.xcodeproj/xcshareddata/xcschemes/3105.xcscheme <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Scheme LastUpgradeVersion="1540" version="1.7">
+            <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
+              <BuildActionEntries>
+                <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
+                  <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="3105A001" BuildableName="3105.app" BlueprintName="3105" ReferencedContainer="container:ThreeOneOSFive.xcodeproj"/>
+                </BuildActionEntry>
+              </BuildActionEntries>
+            </BuildAction>
+            <LaunchAction buildConfiguration="Release" selectedDebuggerIdentifier="" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.PosixSpawn" launchStyle="0" useCustomWorkingDirectory="NO">
+              <BuildableProductRunnable runnableDebuggingMode="0">
+                <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="3105A001" BuildableName="3105.app" BlueprintName="3105" ReferencedContainer="container:ThreeOneOSFive.xcodeproj"/>
+              </BuildableProductRunnable>
+            </LaunchAction>
+            <ProfileAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES"/>
+            <AnalyzeAction buildConfiguration="Release"/>
+            <ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
+          </Scheme>
+          EOF
 
-          xcodebuild \
-            -list \
-            -project "ThreeOneOSFive.xcodeproj"
+      - name: List schemes
+        run: xcodebuild -list -project ThreeOneOSFive.xcodeproj
 
-      # =========================================
-      # 7. PREPARE BUILD DIRECTORY
-      # =========================================
-      - name: Prepare build directory
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf "$RUNNER_TEMP/Build"
-          mkdir -p "$RUNNER_TEMP/Build"
-
-          echo "Build directory:"
-          echo "$RUNNER_TEMP/Build"
-
-      # =========================================
-      # 8. CLEAN
-      # =========================================
-      - name: Clean
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          xcodebuild \
-            -project "ThreeOneOSFive.xcodeproj" \
-            -target "3105" \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            SYMROOT="$RUNNER_TEMP/Build" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            clean
-
-      # =========================================
-      # 9. BUILD
-      # =========================================
       - name: Build unsigned
         shell: bash
         run: |
           set -euo pipefail
-
           xcodebuild \
-            -project "ThreeOneOSFive.xcodeproj" \
-            -target "3105" \
+            -project ThreeOneOSFive.xcodeproj \
+            -scheme 3105 \
             -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
-            SYMROOT="$RUNNER_TEMP/Build" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
 
-      # =========================================
-      # 10. FIND APP
-      # =========================================
-      - name: Find built app
+      - name: Find app
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "===== BUILD OUTPUT ====="
-
-          find "$RUNNER_TEMP/Build" \
-            -type d \
-            -name "*.app" \
-            -print
-
-          APP_PATH=$(find \
-            "$RUNNER_TEMP/Build" \
-            -type d \
-            -name "*.app" \
-            -print -quit)
-
-          if [ -z "$APP_PATH" ]; then
-            echo "ERROR: No .app was created."
-            echo ""
-            echo "Build directory contents:"
-            find "$RUNNER_TEMP/Build" -maxdepth 5 -print
-            exit 1
-          fi
-
+          APP_PATH=$(find "$RUNNER_TEMP/DerivedData/Build/Products" \
+            -type d \( -name "3105.app" -o -name "ThreeOneOSFive.app" \) -print -quit)
+          test -n "$APP_PATH"
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-          echo ""
-          echo "APP FOUND:"
-          echo "$APP_PATH"
-
-      # =========================================
-      # 11. CREATE IPA
-      # =========================================
       - name: Create unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
-
           rm -rf "$RUNNER_TEMP/Payload"
           mkdir -p "$RUNNER_TEMP/Payload"
-
-          cp -R \
-            "$APP_PATH" \
-            "$RUNNER_TEMP/Payload/"
-
+          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/$(basename "$APP_PATH")"
           cd "$RUNNER_TEMP"
+          zip -qry 3105-unsigned.ipa Payload
+          ls -lh 3105-unsigned.ipa
 
-          rm -f "ThreeOneOSFive-unsigned.ipa"
-
-          /usr/bin/zip \
-            -qry \
-            "ThreeOneOSFive-unsigned.ipa" \
-            "Payload"
-
-          test -f "ThreeOneOSFive-unsigned.ipa"
-
-          echo ""
-          echo "===== IPA CREATED ====="
-          ls -lh "ThreeOneOSFive-unsigned.ipa"
-
-      # =========================================
-      # 12. UPLOAD IPA
-      # =========================================
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: ThreeOneOSFive-unsigned
-          path: ${{ runner.temp }}/ThreeOneOSFive-unsigned.ipa
+          name: 3105-unsigned
+          path: ${{ runner.temp }}/3105-unsigned.ipa
           if-no-files-found: error
           retention-days: 7
 
-      # =========================================
-      # 13. UPLOAD LOGS IF FAILED
-      # =========================================
-      - name: Upload build logs
+      - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ThreeOneOSFive-build-logs
-          path: |
-            ${{ runner.temp }}/Build
+          name: 3105-build-logs
+          path: ${{ runner.temp }}/DerivedData/Logs
           if-no-files-found: ignore
           retention-days: 7
